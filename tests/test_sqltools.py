@@ -713,3 +713,46 @@ def test_execute_query_missing_query_raises(mgr):
     mgr._current_connector = conn
     with pytest.raises(KeyError):
         mgr.execute_query("nonexistent")
+
+
+def test_execute_query_kwargs_expanded_into_format_string(mgr):
+    mgr.queries["q1"] = "SELECT * FROM t WHERE id = {user_id} AND status = '{status}'"
+    conn = _mock_conn()
+    conn.cursor.return_value.fetchall.return_value = [(1, "active")]
+    mgr._current_connector = conn
+    result = mgr.execute_query("q1", user_id=42, status="active")
+    conn.cursor.return_value.execute.assert_called_once_with(
+        "SELECT * FROM t WHERE id = 42 AND status = 'active'"
+    )
+    assert result == [(1, "active")]
+
+
+def test_execute_query_list_kwargs_expanded(mgr):
+    mgr.queries["q1"] = "SELECT {col} FROM t"
+    mgr.queries["q2"] = "SELECT {col} FROM u"
+    conn = _mock_conn()
+    conn.cursor.return_value.fetchall.side_effect = [[(1,)], [(2,)]]
+    mgr._current_connector = conn
+    result = mgr.execute_query(["q1", "q2"], col="id")
+    assert conn.cursor.return_value.execute.call_args_list[0][0][0] == "SELECT id FROM t"
+    assert conn.cursor.return_value.execute.call_args_list[1][0][0] == "SELECT id FROM u"
+    assert result == [[(1,)], [(2,)]]
+
+
+def test_execute_query_closes_cursor(mgr):
+    mgr.queries["q1"] = "SELECT 1"
+    conn = _mock_conn()
+    conn.cursor.return_value.fetchall.return_value = []
+    mgr._current_connector = conn
+    mgr.execute_query("q1")
+    conn.cursor.return_value.close.assert_called_once()
+
+
+def test_execute_query_closes_cursor_on_error(mgr):
+    mgr.queries["q1"] = "SELECT 1"
+    conn = _mock_conn()
+    conn.cursor.return_value.execute.side_effect = Exception("DB error")
+    mgr._current_connector = conn
+    with pytest.raises(Exception, match="DB error"):
+        mgr.execute_query("q1")
+    conn.cursor.return_value.close.assert_called_once()

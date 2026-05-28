@@ -25,5 +25,11 @@ dependencies = [
 Homepage = "https://github.com/riders994/rv_pytools"
 Issues = "https://github.com/riders994/rv_pytools/issues"
 
+[project.optional-dependencies]
+dev = ["pytest"]
+
 [tool.setuptools.packages.find]
 exclude = ["tests*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

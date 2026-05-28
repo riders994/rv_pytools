@@ -113,17 +113,19 @@ class Manager(ConnectionManager):
             conn = self.connections[connector]
         conn.autocommit = True
         cursor = conn.cursor()
-
-        if isinstance(name, list):
-            res = []
-            for n in name:
-                q = self.queries[n]
-                cursor.execute(q.format(kwargs))
-                res.append(cursor.fetchall())
-        elif isinstance(name, str):
-            q = self.queries[name]
-            cursor.execute(q.format(kwargs))
-            res = cursor.fetchall()
+        try:
+            if isinstance(name, list):
+                res = []
+                for n in name:
+                    q = self.queries[n]
+                    cursor.execute(q.format(**kwargs))
+                    res.append(cursor.fetchall())
+            else:
+                q = self.queries[name]
+                cursor.execute(q.format(**kwargs))
+                res = cursor.fetchall()
+        finally:
+            cursor.close()
         return res
 
     # --- file methods ---
