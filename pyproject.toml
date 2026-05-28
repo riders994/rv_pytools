@@ -3,7 +3,7 @@ requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "rv_pytools_riders994"
+name = "rv_pytools"
 version = "1.0.0"
 authors = [
   { name="Rohan V", email="rvspamacc@gmail.com" },
