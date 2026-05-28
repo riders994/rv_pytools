@@ -1,5 +1,5 @@
 import pytest
-from rv_defaults.functions import ordinal
+from rv_pytools.functions import ordinal
 
 
 # Basic ordinals

@@ -1,0 +1,8 @@
+.idea/
+build/
+*.egg-info/
+__pycache__/
+*.pyc
+config.toml
+.claude/commands/
+.pytest_cache/

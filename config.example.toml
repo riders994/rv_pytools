@@ -1,0 +1,10 @@
+[paths]
+sql_dir = "sql"
+log_path = "manager.log.json"
+
+[database]
+host = "localhost"
+port = 5432
+dbname = ""
+user = ""
+password = ""

@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rv_pytools_riders994"
+version = "1.0.0"
+authors = [
+  { name="Rohan V", email="rvspamacc@gmail.com" },
+]
+description = "A package for general use in my programs"
+readme = "README.md"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+license = "MIT"
+license-files = ["LICENSE*"]
+requires-python = ">=3.10"
+dependencies = [
+    "psycopg2",
+]
+
+[project.urls]
+Homepage = "https://github.com/riders994/rv_pytools"
+Issues = "https://github.com/riders994/rv_pytools/issues"
+
+[tool.setuptools.packages.find]
+exclude = ["tests*"]
