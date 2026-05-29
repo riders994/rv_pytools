@@ -32,13 +32,15 @@ class ConnectionManager:
 
     def set_connection(self, name: str | None = None) -> psycopg2.extensions.connection | None:
         if name is not None:
-            self._current_connector = self.connections.get(name)
+            found = self.connections.get(name)
+            if found is not None:
+                self._current_connector = found
         if self._current_connector is None:
             self._current_connector = self.last_connector
         return self._current_connector
 
     @property
     def current_connector(self) -> psycopg2.extensions.connection | None:
-        if not self._current_connector:
+        if self._current_connector is None:
             self._current_connector = self.last_connector
         return self._current_connector

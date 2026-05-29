@@ -5,11 +5,8 @@ import time
 import tomllib
 import warnings
 
-import psycopg2.extensions
-from psycopg2._psycopg import cursor
-
 from .connections import ConnectionManager
-from rv_pytools.classes import ConnectionManagerLogEntry
+from ..classes import ConnectionManagerLogEntry
 
 
 class Manager(ConnectionManager):
@@ -111,9 +108,11 @@ class Manager(ConnectionManager):
             conn = self.current_connector
         else:
             conn = self.connections[connector]
-        conn.autocommit = True
-        cursor = conn.cursor()
+        if conn is None:
+            raise RuntimeError("No active connection. Call connect() or set_connection() first.")
+        cursor = None
         try:
+            cursor = conn.cursor()
             if isinstance(name, list):
                 res = []
                 for n in name:
@@ -125,7 +124,8 @@ class Manager(ConnectionManager):
                 cursor.execute(q.format(**kwargs))
                 res = cursor.fetchall()
         finally:
-            cursor.close()
+            if cursor is not None:
+                cursor.close()
         return res
 
     # --- file methods ---
@@ -149,7 +149,7 @@ class Manager(ConnectionManager):
         updated: list[ConnectionManagerLogEntry] = []
 
         for path in resolved:
-            path.unlink()
+            path.unlink(missing_ok=True)
             str_path = str(path)
             existing = next((e for e in self.log if e.file_path == str_path), None)
             if existing:
@@ -213,6 +213,7 @@ class Manager(ConnectionManager):
                     continue
 
                 sql = path.read_text()
+                executed = True
 
                 if sd == "databases":
                     databases_root = self.sql_dir / "databases"
@@ -222,6 +223,8 @@ class Manager(ConnectionManager):
                         with conn.cursor() as cur:
                             cur.execute(sql)
                         conn.commit()
+                    else:
+                        executed = False
 
                 elif sd == "ddl":
                     conn = self.connections.get(name) if name else self.current_connector
@@ -229,25 +232,28 @@ class Manager(ConnectionManager):
                         with conn.cursor() as cur:
                             cur.execute(sql)
                         conn.commit()
+                    else:
+                        executed = False
 
                 elif sd == "queries":
                     self.queries[path.stem] = sql
                     queries_updated = True
 
-                if existing:
-                    existing.date_last_action = ts
-                    existing.last_action = "RUN"
-                    updated.append(existing)
-                else:
-                    entry = ConnectionManagerLogEntry(
-                        file_id=self._next_file_id(),
-                        file_path=str_path,
-                        date_scanned=ts,
-                        date_last_action=ts,
-                        last_action="RUN",
-                    )
-                    self.log.append(entry)
-                    updated.append(entry)
+                if executed:
+                    if existing:
+                        existing.date_last_action = ts
+                        existing.last_action = "RUN"
+                        updated.append(existing)
+                    else:
+                        entry = ConnectionManagerLogEntry(
+                            file_id=self._next_file_id(),
+                            file_path=str_path,
+                            date_scanned=ts,
+                            date_last_action=ts,
+                            last_action="RUN",
+                        )
+                        self.log.append(entry)
+                        updated.append(entry)
 
         if queries_updated:
             self._save_queries()
@@ -310,6 +316,7 @@ class Manager(ConnectionManager):
                 continue
 
             sql = path.read_text()
+            executed = True
 
             if path.is_relative_to(self.sql_dir / "databases"):
                 conn_name = path.parent.name if path.parent != databases_root else path.stem
@@ -318,6 +325,8 @@ class Manager(ConnectionManager):
                     with conn.cursor() as cur:
                         cur.execute(sql)
                     conn.commit()
+                else:
+                    executed = False
 
             elif path.is_relative_to(self.sql_dir / "ddl"):
                 conn = self.connections.get(name) if name else self.current_connector
@@ -325,13 +334,16 @@ class Manager(ConnectionManager):
                     with conn.cursor() as cur:
                         cur.execute(sql)
                     conn.commit()
+                else:
+                    executed = False
 
             elif path.is_relative_to(self.sql_dir / "queries"):
                 self.queries[path.stem] = sql
                 queries_updated = True
 
-            entry.date_last_action = ts
-            entry.last_action = "RUN"
+            if executed:
+                entry.date_last_action = ts
+                entry.last_action = "RUN"
 
         if queries_updated:
             self._save_queries()
@@ -355,7 +367,8 @@ class Manager(ConnectionManager):
             existing = next((e for e in self.log if e.file_path == str_path), None)
             if existing:
                 existing.date_last_action = ts
-                existing.last_action = "SCANNED"
+                if existing.last_action != "RUN":
+                    existing.last_action = "SCANNED"
                 updated.append(existing)
             else:
                 entry = ConnectionManagerLogEntry(

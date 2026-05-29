@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-# Add default/utility classes here
+__all__ = ["ConnectionManagerLogEntry"]
 
 
 @dataclass

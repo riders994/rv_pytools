@@ -1,24 +1,23 @@
 [build-system]
-requires = ["setuptools"]
+requires = ["setuptools>=69"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "rv_pytools"
-version = "1.0.0"
+version = "1.0.1"
 authors = [
   { name="Rohan V", email="rvspamacc@gmail.com" },
 ]
 description = "A package for general use in my programs"
-readme = "README.md"
+readme = "docs/README.md"
 classifiers = [
     "Programming Language :: Python :: 3",
     "Operating System :: OS Independent",
 ]
-license = "MIT"
-license-files = ["LICENSE*"]
+license-files = ["docs/LICENSE*"]
 requires-python = ">=3.10"
 dependencies = [
-    "psycopg2",
+    "psycopg2-binary",
 ]
 
 [project.urls]

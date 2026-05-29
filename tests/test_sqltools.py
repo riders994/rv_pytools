@@ -110,6 +110,24 @@ def test_cm_current_connector_returns_explicit_value():
     assert cm.current_connector is mock
 
 
+def test_cm_current_connector_falsy_connection_not_replaced():
+    cm = ConnectionManager()
+    closed_conn = MagicMock()
+    closed_conn.__bool__ = MagicMock(return_value=False)
+    last_conn = MagicMock()
+    cm._current_connector = closed_conn
+    cm.last_connector = last_conn
+    assert cm.current_connector is closed_conn
+
+
+def test_cm_set_connection_unknown_does_not_clobber_current():
+    cm = ConnectionManager()
+    existing = MagicMock()
+    cm._current_connector = existing
+    cm.set_connection("nonexistent")
+    assert cm._current_connector is existing
+
+
 # ---------------------------------------------------------------------------
 # Manager fixtures
 # ---------------------------------------------------------------------------
@@ -272,6 +290,15 @@ def test_scan_persists_log(mgr, tmp_path):
     assert mgr.log_path.exists()
 
 
+def test_scan_does_not_overwrite_run_status(mgr, tmp_path):
+    f = tmp_path / "sql" / "queries" / "q.sql"
+    f.write_text("SELECT 1;")
+    mgr.run_new_files("queries")
+    assert mgr.log[0].last_action == "RUN"
+    mgr.scan("queries")
+    assert mgr.log[0].last_action == "RUN"
+
+
 # ---------------------------------------------------------------------------
 # Manager.delete_files
 # ---------------------------------------------------------------------------
@@ -320,6 +347,16 @@ def test_delete_non_query_does_not_touch_queries(mgr, tmp_path):
     mgr.scan("ddl")
     mgr.delete_files("t.sql", subdir="ddl")
     assert mgr.queries["unrelated"] == "SELECT 1"
+
+
+def test_delete_files_missing_file_does_not_raise(mgr, tmp_path):
+    f = tmp_path / "sql" / "ddl" / "ghost.sql"
+    f.write_text("CREATE TABLE t (id INT);")
+    mgr.scan("ddl")
+    f.unlink()
+    mgr.delete_files("ghost.sql", subdir="ddl")
+    entry = next(e for e in mgr.log if "ghost.sql" in e.file_path)
+    assert entry.last_action == "deleted"
 
 
 # ---------------------------------------------------------------------------
@@ -406,6 +443,13 @@ def test_run_new_files_databases_fallback_to_current_connector(mgr, tmp_path):
     mgr._current_connector = conn
     mgr.run_new_files("databases")
     _cursor(conn).execute.assert_called_once_with("CREATE TABLE t (id INT);")
+
+
+def test_run_new_files_ddl_no_connection_skips_log_entry(mgr, tmp_path):
+    f = tmp_path / "sql" / "ddl" / "create_table.sql"
+    f.write_text("CREATE TABLE foo (id INT);")
+    mgr.run_new_files("ddl")
+    assert mgr.log == []
 
 
 # ---------------------------------------------------------------------------
@@ -594,11 +638,13 @@ def test_rerun_skips_missing_file(mgr, tmp_path):
     f = tmp_path / "sql" / "ddl" / "create_table.sql"
     f.write_text("CREATE TABLE foo (id INT);")
     mgr.scan("ddl")
+    mgr.set_run_status("create_table", run="RUN")  # force to RUN so skip is meaningful
     entry = mgr.log[0]
+    assert entry.last_action == "RUN"
     f.unlink()
     result = mgr.rerun_files(entry.file_id)
     assert result == [entry]
-    assert entry.last_action == "SCANNED"
+    assert entry.last_action == "RUN"  # skip on missing file must not change status
 
 
 def test_rerun_marks_log_run(mgr, tmp_path):
@@ -680,14 +726,6 @@ def test_execute_query_single(mgr):
     conn.cursor.return_value.execute.assert_called_once_with("SELECT 1")
 
 
-def test_execute_query_sets_autocommit(mgr):
-    mgr.queries["q1"] = "SELECT 1"
-    conn = _mock_conn()
-    conn.cursor.return_value.fetchall.return_value = []
-    mgr._current_connector = conn
-    mgr.execute_query("q1")
-    assert conn.autocommit is True
-
 
 def test_execute_query_list(mgr):
     mgr.queries["q1"] = "SELECT 1"
@@ -704,8 +742,9 @@ def test_execute_query_named_connector(mgr):
     conn = _mock_conn()
     conn.cursor.return_value.fetchall.return_value = [(1,)]
     mgr.connections["mydb"] = conn
-    mgr.execute_query("q1", connector="mydb")
+    result = mgr.execute_query("q1", connector="mydb")
     conn.cursor.return_value.execute.assert_called_once_with("SELECT 1")
+    assert result == [(1,)]
 
 
 def test_execute_query_missing_query_raises(mgr):
@@ -756,3 +795,9 @@ def test_execute_query_closes_cursor_on_error(mgr):
     with pytest.raises(Exception, match="DB error"):
         mgr.execute_query("q1")
     conn.cursor.return_value.close.assert_called_once()
+
+
+def test_execute_query_no_connection_raises(mgr):
+    mgr.queries["q1"] = "SELECT 1"
+    with pytest.raises(RuntimeError, match="No active connection"):
+        mgr.execute_query("q1")
