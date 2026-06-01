@@ -1,6 +1,7 @@
 # Changelog
 ### V1
 
+* 2026-06-01 : v1.1.1 - Fixed log file maintenance to stop duplication
 * 2026-06-01 : v1.1.0
     * Added: Ability to list files
     * Improved: Ability to run files on command and with specificity, rerun old files with status options

@@ -224,6 +224,47 @@ def test_save_and_reload_log(tmp_path):
     assert m2.log[0].last_action == "SCANNED"
 
 
+def test_read_log_resolves_relative_paths(tmp_path):
+    import json
+    from rv_pytools.classes import ConnectionManagerLogEntry
+    from dataclasses import asdict
+    log_path = tmp_path / "test.log.json"
+    sql_dir = tmp_path / "sql"
+    # Write a log entry with a relative path (simulating pre-resolve logs)
+    rel_path = "sql/ddl/old.sql"
+    entry = ConnectionManagerLogEntry(
+        file_id=1, file_path=rel_path,
+        date_scanned="2026-01-01T00:00:00", date_last_action="2026-01-01T00:00:00",
+        last_action="RUN",
+    )
+    log_path.write_text(json.dumps([asdict(entry)]))
+    m = Manager(log_path=log_path, sql_dir=sql_dir)
+    assert m.log[0].file_path == str(Path(rel_path).resolve())
+
+
+def test_scan_deduplicates_after_path_migration(tmp_path):
+    import json
+    from rv_pytools.classes import ConnectionManagerLogEntry
+    from dataclasses import asdict
+    log_path = tmp_path / "test.log.json"
+    sql_dir = tmp_path / "sql"
+    f = sql_dir / "ddl" / "t.sql"
+    # Write a log entry with the relative path form of f
+    rel_path = str(f.relative_to(Path.cwd())) if f.is_relative_to(Path.cwd()) else str(f)
+    entry = ConnectionManagerLogEntry(
+        file_id=1, file_path=str(f),
+        date_scanned="2026-01-01T00:00:00", date_last_action="2026-01-01T00:00:00",
+        last_action="RUN",
+    )
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text(json.dumps([asdict(entry)]))
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text("SELECT 1;")
+    m = Manager(log_path=log_path, sql_dir=sql_dir)
+    m.scan("ddl")
+    assert len(m.log) == 1
+
+
 # ---------------------------------------------------------------------------
 # Manager query persistence
 # ---------------------------------------------------------------------------

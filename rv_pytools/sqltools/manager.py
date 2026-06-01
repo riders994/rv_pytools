@@ -58,7 +58,10 @@ class Manager(ConnectionManager):
         content = self.log_path.read_text().strip()
         if not content:
             return []
-        return [ConnectionManagerLogEntry(**entry) for entry in json.loads(content)]
+        entries = [ConnectionManagerLogEntry(**e) for e in json.loads(content)]
+        for entry in entries:
+            entry.file_path = str(Path(entry.file_path).resolve())
+        return entries
 
     def _next_file_id(self) -> int:
         return max((e.file_id for e in self.log), default=0) + 1
