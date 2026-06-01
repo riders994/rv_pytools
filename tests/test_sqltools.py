@@ -452,6 +452,31 @@ def test_run_new_files_ddl_no_connection_skips_log_entry(mgr, tmp_path):
     assert mgr.log == []
 
 
+def test_run_new_files_no_connection_warns(mgr, tmp_path):
+    (tmp_path / "sql" / "ddl" / "t.sql").write_text("CREATE TABLE t (id INT);")
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        mgr.run_new_files("ddl")
+    assert any("t.sql" in str(warning.message) for warning in w)
+
+
+def test_run_new_files_sql_error_rolls_back_and_continues(mgr, tmp_path):
+    (tmp_path / "sql" / "ddl" / "bad.sql").write_text("INVALID SQL;")
+    (tmp_path / "sql" / "ddl" / "good.sql").write_text("CREATE TABLE t (id INT);")
+    conn = _mock_conn()
+    def execute_side_effect(sql):
+        if "INVALID" in sql:
+            raise Exception("syntax error")
+    _cursor(conn).execute.side_effect = execute_side_effect
+    mgr._current_connector = conn
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        mgr.run_new_files("ddl")
+    conn.rollback.assert_called_once()
+    assert conn.commit.call_count == 1
+    assert any("bad.sql" in str(warning.message) for warning in w)
+
+
 # ---------------------------------------------------------------------------
 # Manager._resolve_entries
 # ---------------------------------------------------------------------------
@@ -634,6 +659,26 @@ def test_rerun_ddl_named_connector(mgr, tmp_path):
     _cursor(conn).execute.assert_called_once_with("CREATE TABLE foo (id INT);")
 
 
+def test_rerun_no_connection_warns(mgr, tmp_path):
+    f = tmp_path / "sql" / "ddl" / "t.sql"
+    f.write_text("CREATE TABLE t (id INT);")
+    mgr.scan("ddl")
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        mgr.rerun_files()
+    assert any("t.sql" in str(warning.message) for warning in w)
+
+
+def test_rerun_returns_only_executed(mgr, tmp_path):
+    (tmp_path / "sql" / "queries" / "a.sql").write_text("SELECT 1;")
+    (tmp_path / "sql" / "queries" / "b.sql").write_text("SELECT 2;")
+    mgr.scan()
+    mgr.set_run_status(mgr.log[0].file_id, run="RUN")
+    result = mgr.rerun_files(skip_run=True)
+    assert len(result) == 1
+    assert result[0].last_action == "RUN"
+
+
 def test_rerun_skips_missing_file(mgr, tmp_path):
     f = tmp_path / "sql" / "ddl" / "create_table.sql"
     f.write_text("CREATE TABLE foo (id INT);")
@@ -643,7 +688,7 @@ def test_rerun_skips_missing_file(mgr, tmp_path):
     assert entry.last_action == "RUN"
     f.unlink()
     result = mgr.rerun_files(entry.file_id)
-    assert result == [entry]
+    assert result == []
     assert entry.last_action == "RUN"  # skip on missing file must not change status
 
 
@@ -663,6 +708,55 @@ def test_rerun_persists_queries(mgr, tmp_path):
     mgr.rerun_files("q")
     reloaded = mgr._read_queries()
     assert reloaded["q"] == "SELECT 2;"
+
+
+def test_rerun_files_none_reruns_all(mgr, tmp_path):
+    for name in ("a.sql", "b.sql"):
+        (tmp_path / "sql" / "queries" / name).write_text("SELECT 1;")
+    mgr.scan()
+    mgr.rerun_files()
+    assert all(e.last_action == "RUN" for e in mgr.log)
+
+
+def test_rerun_files_none_reruns_already_run(mgr, tmp_path):
+    f = tmp_path / "sql" / "queries" / "q.sql"
+    f.write_text("SELECT 1;")
+    mgr.run_new_files("queries")
+    f.write_text("SELECT 2;")
+    mgr.rerun_files()
+    assert mgr.queries["q"] == "SELECT 2;"
+
+
+def test_rerun_files_skip_run_skips_run_entries(mgr, tmp_path):
+    (tmp_path / "sql" / "queries" / "a.sql").write_text("SELECT 1;")
+    (tmp_path / "sql" / "queries" / "b.sql").write_text("SELECT 2;")
+    mgr.scan()
+    mgr.set_run_status(mgr.log[0].file_id, run="RUN")
+    mgr.queries = {}
+    mgr.rerun_files(skip_run=True)
+    assert len(mgr.queries) == 1
+
+
+def test_rerun_files_skip_run_false_runs_all(mgr, tmp_path):
+    for name in ("a.sql", "b.sql"):
+        (tmp_path / "sql" / "queries" / name).write_text("SELECT 1;")
+    mgr.run_new_files("queries")
+    for name in ("a.sql", "b.sql"):
+        (tmp_path / "sql" / "queries" / name).write_text("SELECT 2;")
+    mgr.rerun_files(skip_run=False)
+    assert all(mgr.queries[k] == "SELECT 2;" for k in ("a", "b"))
+
+
+def test_rerun_files_skip_run_with_explicit_list(mgr, tmp_path):
+    for name in ("a.sql", "b.sql"):
+        (tmp_path / "sql" / "queries" / name).write_text("SELECT 1;")
+    mgr.run_new_files("queries")
+    for name in ("a.sql", "b.sql"):
+        (tmp_path / "sql" / "queries" / name).write_text("SELECT 99;")
+    ids = [e.file_id for e in mgr.log]
+    result = mgr.rerun_files(ids, skip_run=True)
+    assert result == []
+    assert all(mgr.queries[k] == "SELECT 1;" for k in ("a", "b"))
 
 
 # ---------------------------------------------------------------------------
@@ -801,3 +895,163 @@ def test_execute_query_no_connection_raises(mgr):
     mgr.queries["q1"] = "SELECT 1"
     with pytest.raises(RuntimeError, match="No active connection"):
         mgr.execute_query("q1")
+
+
+# ---------------------------------------------------------------------------
+# Manager.run_files
+# ---------------------------------------------------------------------------
+
+def test_run_files_query_by_id(mgr, tmp_path):
+    f = tmp_path / "sql" / "queries" / "q.sql"
+    f.write_text("SELECT 1;")
+    mgr.scan("queries")
+    entry = mgr.log[0]
+    result = mgr.run_files(entry.file_id)
+    assert result == [entry]
+    assert entry.last_action == "RUN"
+    assert mgr.queries["q"] == "SELECT 1;"
+
+
+def test_run_files_ddl_by_id(mgr, tmp_path):
+    f = tmp_path / "sql" / "ddl" / "create_table.sql"
+    f.write_text("CREATE TABLE t (id INT);")
+    mgr.scan("ddl")
+    conn = _mock_conn()
+    mgr._current_connector = conn
+    entry = mgr.log[0]
+    result = mgr.run_files(entry.file_id)
+    assert result == [entry]
+    _cursor(conn).execute.assert_called_once_with("CREATE TABLE t (id INT);")
+    conn.commit.assert_called_once()
+
+
+def test_run_files_ddl_named_connector(mgr, tmp_path):
+    f = tmp_path / "sql" / "ddl" / "create_table.sql"
+    f.write_text("CREATE TABLE t (id INT);")
+    mgr.scan("ddl")
+    conn = _mock_conn()
+    mgr.connections["mydb"] = conn
+    mgr.run_files(mgr.log[0].file_id, name="mydb")
+    _cursor(conn).execute.assert_called_once_with("CREATE TABLE t (id INT);")
+
+
+def test_run_files_skips_already_run(mgr, tmp_path):
+    f = tmp_path / "sql" / "queries" / "q.sql"
+    f.write_text("SELECT 1;")
+    mgr.run_new_files("queries")
+    mgr.queries = {}
+    result = mgr.run_files(mgr.log[0].file_id)
+    assert result == []
+    assert "q" not in mgr.queries
+
+
+def test_run_files_force_reruns_already_run(mgr, tmp_path):
+    f = tmp_path / "sql" / "queries" / "q.sql"
+    f.write_text("SELECT 1;")
+    mgr.run_new_files("queries")
+    f.write_text("SELECT 2;")
+    mgr.run_files(mgr.log[0].file_id, force=True)
+    assert mgr.queries["q"] == "SELECT 2;"
+
+
+def test_run_files_skips_missing_file(mgr, tmp_path):
+    f = tmp_path / "sql" / "ddl" / "t.sql"
+    f.write_text("SELECT 1;")
+    mgr.scan("ddl")
+    f.unlink()
+    result = mgr.run_files(mgr.log[0].file_id)
+    assert result == []
+
+
+def test_run_files_list_of_ids(mgr, tmp_path):
+    for name in ("a.sql", "b.sql"):
+        (tmp_path / "sql" / "queries" / name).write_text("SELECT 1;")
+    mgr.scan()
+    ids = [e.file_id for e in mgr.log]
+    result = mgr.run_files(ids)
+    assert len(result) == 2
+    assert all(e.last_action == "RUN" for e in result)
+
+
+def test_run_files_partial_skip(mgr, tmp_path):
+    (tmp_path / "sql" / "queries" / "a.sql").write_text("SELECT 1;")
+    (tmp_path / "sql" / "queries" / "b.sql").write_text("SELECT 2;")
+    mgr.scan()
+    mgr.set_run_status(mgr.log[0].file_id, run="RUN")
+    ids = [e.file_id for e in mgr.log]
+    result = mgr.run_files(ids)
+    assert len(result) == 1
+
+
+def test_run_files_persists_log(mgr, tmp_path):
+    f = tmp_path / "sql" / "queries" / "q.sql"
+    f.write_text("SELECT 1;")
+    mgr.scan("queries")
+    mgr.run_files(mgr.log[0].file_id)
+    m2 = Manager(log_path=tmp_path / "test.log.json", sql_dir=tmp_path / "sql")
+    assert m2.log[0].last_action == "RUN"
+
+
+def test_run_files_unknown_id_returns_empty(mgr):
+    result = mgr.run_files(999)
+    assert result == []
+
+
+# ---------------------------------------------------------------------------
+# Manager.list_files
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def mgr_populated(mgr, tmp_path):
+    (tmp_path / "sql" / "ddl" / "a.sql").write_text("SELECT 1;")
+    (tmp_path / "sql" / "ddl" / "b.sql").write_text("SELECT 2;")
+    (tmp_path / "sql" / "queries" / "q.sql").write_text("SELECT 3;")
+    mgr.scan()
+    mgr.set_run_status("a", run="RUN")
+    return mgr
+
+
+def test_list_files_no_filter_returns_all(mgr_populated):
+    assert len(mgr_populated.list_files()) == 3
+
+
+def test_list_files_by_subdir_single(mgr_populated, tmp_path):
+    result = mgr_populated.list_files(subdir="ddl")
+    assert len(result) == 2
+    assert all("ddl" in e.file_path for e in result)
+
+
+def test_list_files_by_subdir_list(mgr_populated, tmp_path):
+    result = mgr_populated.list_files(subdir=["ddl", "queries"])
+    assert len(result) == 3
+
+
+def test_list_files_by_subdir_excludes_others(mgr_populated, tmp_path):
+    result = mgr_populated.list_files(subdir="queries")
+    assert len(result) == 1
+    assert "queries" in result[0].file_path
+
+
+def test_list_files_by_status_single(mgr_populated):
+    result = mgr_populated.list_files(status="RUN")
+    assert all(e.last_action == "RUN" for e in result)
+    assert len(result) == 1
+
+
+def test_list_files_by_status_list(mgr_populated):
+    result = mgr_populated.list_files(status=["RUN", "SCANNED"])
+    assert len(result) == 3
+
+
+def test_list_files_subdir_and_status(mgr_populated):
+    result = mgr_populated.list_files(subdir="ddl", status="SCANNED")
+    assert len(result) == 1
+    assert "b.sql" in result[0].file_path
+
+
+def test_list_files_no_match_returns_empty(mgr_populated):
+    assert mgr_populated.list_files(status="deleted") == []
+
+
+def test_list_files_empty_log(mgr):
+    assert mgr.list_files() == []

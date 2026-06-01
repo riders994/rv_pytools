@@ -24,7 +24,7 @@ class Manager(ConnectionManager):
         _log = log_path or cfg_paths.get("log_path") or "manager.log.json"
         _sql = sql_dir or cfg_paths.get("sql_dir") or "sql"
         self.log_path: Path = Path(_log)
-        self.sql_dir: Path = Path(_sql)
+        self.sql_dir: Path = Path(_sql).resolve()
         self.db_defaults: dict = self.config.get("database", {})
 
         self._init_paths()
@@ -180,6 +180,18 @@ class Manager(ConnectionManager):
         self.save_log()
         return updated
 
+    @staticmethod
+    def _exec_sql(conn, sql: str, file_path: str) -> bool:
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql)
+            conn.commit()
+            return True
+        except Exception as exc:
+            conn.rollback()
+            warnings.warn(f"Failed to execute {file_path}: {exc}", stacklevel=3)
+            return False
+
     def _collect_sql_files(self, subdir: str) -> list[Path]:
         base = self.sql_dir / subdir
         if not base.exists():
@@ -220,24 +232,23 @@ class Manager(ConnectionManager):
                     conn_name = path.parent.name if path.parent != databases_root else path.stem
                     conn = self.connections.get(conn_name) or self.current_connector
                     if conn:
-                        with conn.cursor() as cur:
-                            cur.execute(sql)
-                        conn.commit()
+                        executed = self._exec_sql(conn, sql, str_path)
                     else:
+                        warnings.warn(f"No connection available for {str_path}", stacklevel=2)
                         executed = False
 
                 elif sd == "ddl":
                     conn = self.connections.get(name) if name else self.current_connector
                     if conn:
-                        with conn.cursor() as cur:
-                            cur.execute(sql)
-                        conn.commit()
+                        executed = self._exec_sql(conn, sql, str_path)
                     else:
+                        warnings.warn(f"No connection available for {str_path}", stacklevel=2)
                         executed = False
 
                 elif sd == "queries":
                     self.queries[path.stem] = sql
                     queries_updated = True
+                    executed = True
 
                 if executed:
                     if existing:
@@ -302,15 +313,20 @@ class Manager(ConnectionManager):
 
     def rerun_files(
         self,
-        files: int | str | Path | list[int | str | Path],
+        files: int | str | Path | list[int | str | Path] | None = None,
         name: str | None = None,
+        skip_run: bool = False,
     ) -> list[ConnectionManagerLogEntry]:
-        entries = self._resolve_entries(files)
+        entries = self.log if files is None else self._resolve_entries(files)
         ts = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
         databases_root = self.sql_dir / "databases"
         queries_updated = False
+        updated: list[ConnectionManagerLogEntry] = []
 
         for entry in entries:
+            if skip_run and entry.last_action == "RUN":
+                continue
+
             path = Path(entry.file_path)
             if not path.exists():
                 continue
@@ -322,32 +338,105 @@ class Manager(ConnectionManager):
                 conn_name = path.parent.name if path.parent != databases_root else path.stem
                 conn = self.connections.get(conn_name) or self.current_connector
                 if conn:
-                    with conn.cursor() as cur:
-                        cur.execute(sql)
-                    conn.commit()
+                    executed = self._exec_sql(conn, sql, entry.file_path)
                 else:
+                    warnings.warn(f"No connection available for {entry.file_path}", stacklevel=2)
                     executed = False
 
             elif path.is_relative_to(self.sql_dir / "ddl"):
                 conn = self.connections.get(name) if name else self.current_connector
                 if conn:
-                    with conn.cursor() as cur:
-                        cur.execute(sql)
-                    conn.commit()
+                    executed = self._exec_sql(conn, sql, entry.file_path)
                 else:
+                    warnings.warn(f"No connection available for {entry.file_path}", stacklevel=2)
                     executed = False
 
             elif path.is_relative_to(self.sql_dir / "queries"):
                 self.queries[path.stem] = sql
                 queries_updated = True
+                executed = True
 
             if executed:
                 entry.date_last_action = ts
                 entry.last_action = "RUN"
+                updated.append(entry)
 
         if queries_updated:
             self._save_queries()
         self.save_log()
+        return updated
+
+    def run_files(
+        self,
+        files: int | str | Path | list[int | str | Path],
+        name: str | None = None,
+        force: bool = False,
+    ) -> list[ConnectionManagerLogEntry]:
+        entries = self._resolve_entries(files)
+        ts = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
+        databases_root = self.sql_dir / "databases"
+        queries_updated = False
+        updated: list[ConnectionManagerLogEntry] = []
+
+        for entry in entries:
+            if not force and entry.last_action == "RUN":
+                continue
+
+            path = Path(entry.file_path)
+            if not path.exists():
+                continue
+
+            sql = path.read_text()
+            executed = True
+
+            if path.is_relative_to(self.sql_dir / "databases"):
+                conn_name = path.parent.name if path.parent != databases_root else path.stem
+                conn = self.connections.get(conn_name) or self.current_connector
+                if conn:
+                    executed = self._exec_sql(conn, sql, entry.file_path)
+                else:
+                    warnings.warn(f"No connection available for {entry.file_path}", stacklevel=2)
+                    executed = False
+
+            elif path.is_relative_to(self.sql_dir / "ddl"):
+                conn = self.connections.get(name) if name else self.current_connector
+                if conn:
+                    executed = self._exec_sql(conn, sql, entry.file_path)
+                else:
+                    warnings.warn(f"No connection available for {entry.file_path}", stacklevel=2)
+                    executed = False
+
+            elif path.is_relative_to(self.sql_dir / "queries"):
+                self.queries[path.stem] = sql
+                queries_updated = True
+                executed = True
+
+            if executed:
+                entry.date_last_action = ts
+                entry.last_action = "RUN"
+                updated.append(entry)
+
+        if queries_updated:
+            self._save_queries()
+        self.save_log()
+        return updated
+
+    def list_files(
+        self,
+        subdir: str | list[str] | None = None,
+        status: str | list[str] | None = None,
+    ) -> list[ConnectionManagerLogEntry]:
+        entries = self.log
+
+        if subdir is not None:
+            subdirs = [subdir] if isinstance(subdir, str) else subdir
+            bases = [self.sql_dir / sd for sd in subdirs]
+            entries = [e for e in entries if any(Path(e.file_path).is_relative_to(b) for b in bases)]
+
+        if status is not None:
+            statuses = {status} if isinstance(status, str) else set(status)
+            entries = [e for e in entries if e.last_action in statuses]
+
         return entries
 
     def scan(self, subdir: str | None = None) -> list[ConnectionManagerLogEntry]:
