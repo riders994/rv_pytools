@@ -1,6 +1,7 @@
 # Changelog
 ### V1
 
+* 2026-06-17 : v1.2.0 - Added `anonymize`/`deanonymize` functions for reversible, label-grouped column anonymization
 * 2026-06-01 : v1.1.1 - Fixed log file maintenance to stop duplication
 * 2026-06-01 : v1.1.0
     * Added: Ability to list files
