@@ -13,6 +13,31 @@ def ordinal(n):
     return "%d%s" % (n, "tsnrhtdd"[(n//10 % 10 != 1)*(n % 10 < 4)*n % 10::4])
 
 
+def _apply_to_column_or_index(df, col, func):
+    """Apply ``func`` element-wise to a column or named index level in place.
+
+    ``col`` may name a regular column or a (possibly MultiIndex) index level.
+    Columns take precedence if a name appears in both. Raises KeyError if the
+    name is found in neither.
+    """
+    if col in df.columns:
+        df[col] = df[col].map(func)
+        return
+
+    if col in df.index.names:
+        pos = df.index.names.index(col)
+        new_values = [func(v) for v in df.index.get_level_values(pos)]
+        if df.index.nlevels == 1:
+            df.index = pd.Index(new_values, name=df.index.names[0])
+        else:
+            arrays = [df.index.get_level_values(i) for i in range(df.index.nlevels)]
+            arrays[pos] = new_values
+            df.index = pd.MultiIndex.from_arrays(arrays, names=df.index.names)
+        return
+
+    raise KeyError(f"{col!r} not found in DataFrame columns or index")
+
+
 def anonymize(df, columns, file_location=DEFAULT_ANON_FILE):
     """Anonymize values in the given columns and persist the reversal map.
 
@@ -34,8 +59,6 @@ def anonymize(df, columns, file_location=DEFAULT_ANON_FILE):
     reverse = {}
 
     for col, label in columns.items():
-        if col not in df.columns:
-            raise KeyError(f"Column {col!r} not found in DataFrame")
         token_for_value = reverse.setdefault(label, {})
         token_to_value = mapping.setdefault(label, {})
 
@@ -48,7 +71,7 @@ def anonymize(df, columns, file_location=DEFAULT_ANON_FILE):
                 token_to_value[token] = value
             return token_for_value[value]
 
-        df[col] = df[col].map(_tokenize)
+        _apply_to_column_or_index(df, col, _tokenize)
 
     with open(file_location, "w") as f:
         json.dump(mapping, f, indent=2, default=str)
@@ -73,9 +96,9 @@ def deanonymize(df, columns, file_location=DEFAULT_ANON_FILE):
         mapping = json.load(f)
 
     for col, label in columns.items():
-        if col not in df.columns:
-            raise KeyError(f"Column {col!r} not found in DataFrame")
         token_to_value = mapping.get(label, {})
-        df[col] = df[col].map(lambda token: token_to_value.get(token, token))
+        _apply_to_column_or_index(
+            df, col, lambda token: token_to_value.get(token, token)
+        )
 
     return df

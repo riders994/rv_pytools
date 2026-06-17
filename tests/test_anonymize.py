@@ -74,3 +74,38 @@ def test_missing_values_preserved(tmp_path):
 def test_unknown_column_raises(df, tmp_path):
     with pytest.raises(KeyError):
         anonymize(df, {"nope": "x"}, tmp_path / "map.json")
+
+
+def test_roundtrip_named_index(df, tmp_path):
+    df = df.set_index("first_name")
+    loc = tmp_path / "map.json"
+    columns = {"first_name": "name", "contact_email": "email"}
+    anon = anonymize(df, columns, loc)
+
+    assert "Alice" not in anon.index.tolist()
+    restored = deanonymize(anon, columns, loc)
+    pd.testing.assert_frame_equal(restored, df)
+
+
+def test_roundtrip_unnamed_index(df, tmp_path):
+    df = df.set_index("first_name")
+    df.index.name = None  # unnamed single index
+    loc = tmp_path / "map.json"
+    columns = {None: "name", "contact_email": "email"}
+    anon = anonymize(df, columns, loc)
+
+    assert "Alice" not in anon.index.tolist()
+    assert anon.index.name is None  # unnamed-ness preserved
+    restored = deanonymize(anon, columns, loc)
+    pd.testing.assert_frame_equal(restored, df)
+
+
+def test_roundtrip_multiindex(df, tmp_path):
+    df = df.set_index(["first_name", "contact_email"])
+    loc = tmp_path / "map.json"
+    columns = {"first_name": "name", "contact_email": "email", "billing_email": "email"}
+    anon = anonymize(df, columns, loc)
+
+    assert "Alice" not in anon.index.get_level_values("first_name").tolist()
+    restored = deanonymize(anon, columns, loc)
+    pd.testing.assert_frame_equal(restored, df)
